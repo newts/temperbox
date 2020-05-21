@@ -16,9 +16,11 @@ Adafruit_MLX90614 mlx = Adafruit_MLX90614();
 
 // Define buttons
 //
-#define BUTTON_A  3
-#define UNITS 2
+#define BUTTON_A 3
+#define SWITCH_B 2
 
+// todo: UI for fudge factor (sorry I mean user calibration)
+//
 
 
 
@@ -31,16 +33,47 @@ extern uint8_t BigFont[];
 
 
 
-int tick;
+const double Forehead[] = {
+  34.0, 35.0, 35.6, 35.8, 36.0, 36.2, 36.4, 37.0,
+};
+const double Body[] = {
+  36.2, 37.0, 37.5, 37.7, 37.8, 38.0, 38.1, 38.5,
+};
+const int  NUM_SEGMENTS = ( (sizeof(Body) / (sizeof(double))) - 1);
+
+double BodyFudge = 0.0;
+int Farenheight = 0;
+
+double ForeheadToBody(double forehead)
+{
+  int i = 1;
+
+  // find the right segment
+  //
+  while (i < NUM_SEGMENTS) {
+    if (forehead < Forehead[i]) {
+      break;
+    }
+    i++;
+  }
+  double m = (Body[i] - Body[i - 1]) / (Forehead[i] - Forehead[i - 1]);
+  double b = Body[0] - m * Forehead[0];
+  printf("i=%d m=%f b=%f\n", i, m, b);
+
+  return (m * forehead + b) + BodyFudge;
+}
+
+int tick, tickdown;
 double emissivity = 0.96;
 const double E_MIN = 0.8;
 const double E_MAX = 1.0;
 const double E_STEP = 0.01;
 double ambient, ambientC;
-double temper, temperC;
-char s[32];
+double temper, temperC, temperCB;;
+char s[64];
 double dt;
 char *units;
+char *mode;
 
 
 
@@ -52,11 +85,12 @@ void setup()
   float de;
 
   Serial.begin(115200);
+  tickdown = 0;
 
   // Setup switches and blinky
   //
   pinMode(BUTTON_A, INPUT_PULLUP);
-  pinMode(UNITS, INPUT_PULLUP);
+  pinMode(SWITCH_B, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
 
   // Initialize the sensor
@@ -127,7 +161,7 @@ void setup()
       // if the button is down then increment/decrement
       //
       if (!digitalRead(BUTTON_A)) {
-        if (digitalRead(UNITS)) {
+        if (digitalRead(SWITCH_B)) {
           emissivity += E_STEP;
           if (emissivity > E_MAX) {
             emissivity = E_MAX;
@@ -169,7 +203,7 @@ void setup()
 
 double CtoF(double c)
 {
-  return (c * 9) / 5 + 32;
+  return (c * 9.0) / 5.0 + 32.0;
 }
 
 
@@ -181,18 +215,35 @@ void loop()
     // Only update temperature when button pressed
     //
     if (!digitalRead(BUTTON_A)) {
-      temperC = mlx.readObjectTempC();
+      if (++tickdown > 1) { // debounce for units change
+        temperC = mlx.readObjectTempC();
+      }
+    }
+    else {
+      if (tickdown && (tickdown < 2)) {
+        Farenheight = !Farenheight; // short press changes units
+      }
+      tickdown = 0;
     }
     ambientC = mlx.readAmbientTempC();
 
-    if (digitalRead(UNITS)) {
+    if (!digitalRead(SWITCH_B)) {
+      mode = "Fever";
+      temperCB = ForeheadToBody(temperC);
+    }
+    else {
+      mode = "Actual";
+      temperCB = temperC;
+    }
+
+    if (Farenheight) {
       ambient = CtoF(ambientC);
-      temper = CtoF(temperC);
+      temper = CtoF(temperCB);
       units = "F";
     }
     else {
       ambient = ambientC;
-      temper = temperC;
+      temper = temperCB;
       units = "C";
     }
 
@@ -209,19 +260,25 @@ void loop()
     // Determine the color based on fever.  Temperatures are arbitrarily based on google.
     //
     myGLCD.setFont(BigFont);
-    if (temperC > 39.0) {
-      myGLCD.setColor(VGA_RED);
-    }
-    else if (temperC > 38) {
-      myGLCD.setColor(VGA_YELLOW);
+
+    if (digitalRead(SWITCH_B)) {
+      myGLCD.setColor(VGA_BLUE);
     }
     else {
-      myGLCD.setColor(VGA_GREEN);
+      if (temperCB > 39.4) {
+        myGLCD.setColor(VGA_RED);
+      }
+      else if (temperCB > 37.7) {
+        myGLCD.setColor(VGA_YELLOW);
+      }
+      else {
+        myGLCD.setColor(VGA_GREEN);
+      }
     }
 
     dt = temper + 0.005;
     sprintf(s, " %d.%02d %s ", int(dt), int(dt * 100) % 100, units);
-    myGLCD.print(s, 16, 52);
+    myGLCD.print(s, 4, 52);
     Serial.println(s);
   }
 
